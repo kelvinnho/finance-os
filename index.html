@@ -9,6 +9,9 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="default" />
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://accounts.google.com/gsi/client" async defer></script>
+  <style>
+    input[type="range"] { touch-action: pan-y; }
+  </style>
 </head>
 <body class="bg-slate-50 text-slate-800 pb-20">
 
@@ -38,7 +41,7 @@
       <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-slate-100">
         <div>
           <label class="block text-xs font-medium text-slate-500 mb-1">每月綜合入帳總額</label>
-          <input type="number" id="inputIncome" onchange="updateIncome(this.value)"
+          <input type="number" id="inputIncome" oninput="updateIncome(this.value)"
             class="text-2xl font-bold text-slate-900 bg-slate-50 border border-slate-200 rounded-lg px-3 py-1.5 w-44 focus:outline-none focus:ring-2 focus:ring-blue-500" />
         </div>
         <div class="grid grid-cols-3 gap-3 text-right">
@@ -132,30 +135,23 @@
     let appState = JSON.parse(localStorage.getItem('finance_router_state')) || DEFAULT_STATE;
     let accessToken = null;
     let driveFileId = null;
-    let saveTimeout = null;
+    let localSaveTimer = null;
+    let cloudSaveTimer = null;
 
-    function render() {
+    // 僅在結構增減或載入資料時重建 DOM
+    function renderStructure() {
       document.getElementById('inputIncome').value = appState.income;
-      let totalOps = 0, totalInv = 0;
       const summaryGrid = document.getElementById('bankSummaryGrid');
       const container = document.getElementById('groupsContainer');
       summaryGrid.innerHTML = '';
       container.innerHTML = '';
 
       appState.groups.forEach((group, gIdx) => {
-        let gOps = 0, gInv = 0;
-        group.items.forEach(item => {
-          if (item.isInv) gInv += Number(item.value);
-          else gOps += Number(item.value);
-        });
-        totalOps += gOps;
-        totalInv += gInv;
-
         summaryGrid.innerHTML += `
           <div class="bg-slate-50 rounded-xl p-2.5 border border-slate-200/80">
             <div class="text-[11px] font-medium text-slate-500 truncate">${group.name.split('（')[0]}</div>
-            <div class="text-sm font-bold text-slate-900 mt-0.5">$${(gOps + gInv).toLocaleString()}</div>
-            <div class="text-[10px] text-slate-400 mt-0.5">營 $${gOps.toLocaleString()} / 投 $${gInv.toLocaleString()}</div>
+            <div id="sum_total_${gIdx}" class="text-sm font-bold text-slate-900 mt-0.5">$0</div>
+            <div id="sum_sub_${gIdx}" class="text-[10px] text-slate-400 mt-0.5">營 $0 / 投 $0</div>
           </div>
         `;
 
@@ -170,15 +166,15 @@
               </div>
               <div class="flex items-center gap-2">
                 <span class="text-xs text-slate-400">$</span>
-                <input type="number" value="${item.value}" step="${item.step}"
-                  onchange="updateItemValue(${gIdx}, ${iIdx}, this.value)"
+                <input type="number" id="num_${gIdx}_${iIdx}" value="${item.value}" step="${item.step}"
+                  oninput="handleNumberInput(${gIdx}, ${iIdx}, this.value)"
                   class="w-20 text-right text-sm font-bold text-slate-900 bg-slate-50 border border-slate-200 rounded px-1.5 py-0.5" />
                 <button onclick="deleteItem(${gIdx}, ${iIdx})" title="刪除項目" class="text-slate-300 hover:text-rose-500 text-xs px-1">✕</button>
               </div>
             </div>
-            <input type="range" min="0" max="${item.max}" step="${item.step}" value="${item.value}"
-              oninput="updateItemValue(${gIdx}, ${iIdx}, this.value)"
-              class="w-full h-1.5 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-blue-600" />
+            <input type="range" id="range_${gIdx}_${iIdx}" min="0" max="${item.max}" step="${item.step}" value="${item.value}"
+              oninput="handleSliderInput(${gIdx}, ${iIdx}, this.value)"
+              class="w-full h-2 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-blue-600" />
           </div>
         `).join('');
 
@@ -190,7 +186,7 @@
                 <h2 class="font-bold text-slate-800 text-sm sm:text-base">${group.name}</h2>
               </div>
               <div class="text-right">
-                <span class="text-sm font-bold text-slate-900">$${(gOps + gInv).toLocaleString()}</span>
+                <span id="group_total_${gIdx}" class="text-sm font-bold text-slate-900">$0</span>
               </div>
             </div>
             <div class="divide-y divide-slate-100">${itemsHtml}</div>
@@ -201,6 +197,28 @@
         `;
       });
 
+      recalculateTotals();
+    }
+
+    // 拖動滑桿時僅修改文字數值，不銷毀任何 DOM 元素（60fps 零卡頓）
+    function recalculateTotals() {
+      let totalOps = 0, totalInv = 0;
+
+      appState.groups.forEach((group, gIdx) => {
+        let gOps = 0, gInv = 0;
+        group.items.forEach(item => {
+          if (item.isInv) gInv += Number(item.value);
+          else gOps += Number(item.value);
+        });
+        totalOps += gOps;
+        totalInv += gInv;
+
+        const gTotal = gOps + gInv;
+        document.getElementById(`sum_total_${gIdx}`).textContent = `$${gTotal.toLocaleString()}`;
+        document.getElementById(`sum_sub_${gIdx}`).textContent = `營 $${gOps.toLocaleString()} / 投 $${gInv.toLocaleString()}`;
+        document.getElementById(`group_total_${gIdx}`).textContent = `$${gTotal.toLocaleString()}`;
+      });
+
       const balance = appState.income - (totalOps + totalInv);
       document.getElementById('statOps').textContent = `$${totalOps.toLocaleString()}`;
       document.getElementById('statInv').textContent = `$${totalInv.toLocaleString()}`;
@@ -209,20 +227,32 @@
       balEl.className = `text-base font-bold ${balance >= 0 ? 'text-emerald-600' : 'text-amber-600'}`;
     }
 
-    function updateIncome(val) {
-      appState.income = Number(val) || 0;
-      persistState();
-      render();
-    }
-
-    function updateItemValue(gIdx, iIdx, val) {
+    function handleSliderInput(gIdx, iIdx, val) {
       const num = Number(val) || 0;
       appState.groups[gIdx].items[iIdx].value = num;
-      if (num > appState.groups[gIdx].items[iIdx].max) {
-        appState.groups[gIdx].items[iIdx].max = Math.ceil(num * 1.5 / 1000) * 1000;
+      document.getElementById(`num_${gIdx}_${iIdx}`).value = num;
+      recalculateTotals();
+      schedulePersist();
+    }
+
+    function handleNumberInput(gIdx, iIdx, val) {
+      const num = Number(val) || 0;
+      const item = appState.groups[gIdx].items[iIdx];
+      item.value = num;
+      const rangeEl = document.getElementById(`range_${gIdx}_${iIdx}`);
+      if (num > item.max) {
+        item.max = Math.ceil(num * 1.5 / 1000) * 1000;
+        rangeEl.max = item.max;
       }
-      persistState();
-      render();
+      rangeEl.value = num;
+      recalculateTotals();
+      schedulePersist();
+    }
+
+    function updateIncome(val) {
+      appState.income = Number(val) || 0;
+      recalculateTotals();
+      schedulePersist();
     }
 
     function addNewItem(gIdx) {
@@ -238,15 +268,15 @@
         step: 50,
         isInv
       });
-      persistState();
-      render();
+      renderStructure();
+      schedulePersist();
     }
 
     function deleteItem(gIdx, iIdx) {
       if (!confirm(`確定刪除「${appState.groups[gIdx].items[iIdx].label}」嗎？`)) return;
       appState.groups[gIdx].items.splice(iIdx, 1);
-      persistState();
-      render();
+      renderStructure();
+      schedulePersist();
     }
 
     function addNewGroup() {
@@ -258,8 +288,8 @@
         color: '#0ea5e9',
         items: []
       });
-      persistState();
-      render();
+      renderStructure();
+      schedulePersist();
     }
 
     function exportJSON() {
@@ -280,8 +310,8 @@
           const parsed = JSON.parse(e.target.result);
           if (parsed.groups) {
             appState = parsed;
-            persistState();
-            render();
+            renderStructure();
+            schedulePersist();
             alert('匯入成功！');
           }
         } catch (err) {
@@ -291,13 +321,17 @@
       reader.readAsText(file);
     }
 
-    function persistState() {
-      appState.lastUpdated = new Date().toISOString();
-      localStorage.setItem('finance_router_state', JSON.stringify(appState));
+    function schedulePersist() {
+      clearTimeout(localSaveTimer);
+      localSaveTimer = setTimeout(() => {
+        appState.lastUpdated = new Date().toISOString();
+        localStorage.setItem('finance_router_state', JSON.stringify(appState));
+      }, 300);
+
       if (accessToken) {
         document.getElementById('syncStatus').textContent = '正在同步至 Google Drive...';
-        clearTimeout(saveTimeout);
-        saveTimeout = setTimeout(saveToGoogleDrive, 1500);
+        clearTimeout(cloudSaveTimer);
+        cloudSaveTimer = setTimeout(saveToGoogleDrive, 1500);
       }
     }
 
@@ -307,17 +341,15 @@
         return;
       }
       if (typeof google === 'undefined' || !google.accounts) {
-        alert('Google 登入腳本尚未載入完成，請檢查網絡或停用廣告攔截器後重整頁面。');
+        alert('Google 登入腳本尚未載入完成，請檢查網絡後重整頁面。');
         return;
       }
-      document.getElementById('syncStatus').textContent = '正在喚起 Google 登入視窗...';
       const tokenClient = google.accounts.oauth2.initTokenClient({
         client_id: CLIENT_ID,
         scope: SCOPES,
         callback: async (resp) => {
           if (resp.error) {
             document.getElementById('syncStatus').textContent = `授權失敗：${resp.error}`;
-            alert(`Google 授權失敗 (${resp.error})。\n請確認：\n1. 已在 Audience 加入你的 Gmail 為 Test User\n2. 已在 Clients 填入 https://kelvinnho.github.io`);
             return;
           }
           accessToken = resp.access_token;
@@ -325,7 +357,7 @@
           await loadFromGoogleDrive();
         }
       });
-      tokenClient.requestAccessToken({ prompt: 'select_account' });
+      tokenClient.requestAccessToken({ prompt: '' });
     }
 
     async function loadFromGoogleDrive() {
@@ -345,7 +377,7 @@
           if (new Date(cloudState.lastUpdated) > new Date(appState.lastUpdated)) {
             appState = cloudState;
             localStorage.setItem('finance_router_state', JSON.stringify(appState));
-            render();
+            renderStructure();
           }
           document.getElementById('syncStatus').textContent = '已與 Google Drive 雲端同步';
         } else {
@@ -353,7 +385,6 @@
         }
       } catch (e) {
         document.getElementById('syncStatus').textContent = `雲端錯誤：${e.message}`;
-        alert(`Google Drive 讀寫失敗：\n${e.message}\n\n（若提示 API disabled，請至 Google Cloud 程式庫啟用 Google Drive API）`);
       }
     }
 
@@ -382,7 +413,7 @@
       }
     }
 
-    render();
+    renderStructure();
   </script>
 </body>
 </html>
