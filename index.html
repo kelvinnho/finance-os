@@ -302,21 +302,30 @@
     }
 
     function handleAuthClick() {
-      if (CLIENT_ID === '143100916134-a6tf0693ien5hh4h760usa1l38qkkrbi.apps.googleusercontent.com') {
+      if (!CLIENT_ID || CLIENT_ID === '143100916134-a6tf0693ien5hh4h760usa1l38qkkrbi.apps.googleusercontent.com') {
         alert('請先在 index.html 中填入你的 Google OAuth Client ID');
         return;
       }
+      if (typeof google === 'undefined' || !google.accounts) {
+        alert('Google 登入腳本尚未載入完成，請檢查網絡或停用廣告攔截器後重整頁面。');
+        return;
+      }
+      document.getElementById('syncStatus').textContent = '正在喚起 Google 登入視窗...';
       const tokenClient = google.accounts.oauth2.initTokenClient({
         client_id: CLIENT_ID,
         scope: SCOPES,
         callback: async (resp) => {
-          if (resp.error) return;
+          if (resp.error) {
+            document.getElementById('syncStatus').textContent = `授權失敗：${resp.error}`;
+            alert(`Google 授權失敗 (${resp.error})。\n請確認：\n1. 已在 Audience 加入你的 Gmail 為 Test User\n2. 已在 Clients 填入 https://kelvinnho.github.io`);
+            return;
+          }
           accessToken = resp.access_token;
           document.getElementById('btnGoogleSync').textContent = '已連接 Drive';
           await loadFromGoogleDrive();
         }
       });
-      tokenClient.requestAccessToken({ prompt: '' });
+      tokenClient.requestAccessToken({ prompt: 'select_account' });
     }
 
     async function loadFromGoogleDrive() {
@@ -325,6 +334,8 @@
           headers: { Authorization: `Bearer ${accessToken}` }
         });
         const data = await res.json();
+        if (!res.ok) throw new Error(data.error?.message || `HTTP ${res.status}`);
+
         if (data.files && data.files.length > 0) {
           driveFileId = data.files[0].id;
           const fileRes = await fetch(`https://www.googleapis.com/drive/v3/files/${driveFileId}?alt=media`, {
@@ -341,28 +352,34 @@
           await saveToGoogleDrive();
         }
       } catch (e) {
-        document.getElementById('syncStatus').textContent = '雲端讀取失敗，已切換本地模式';
+        document.getElementById('syncStatus').textContent = `雲端錯誤：${e.message}`;
+        alert(`Google Drive 讀寫失敗：\n${e.message}\n\n（若提示 API disabled，請至 Google Cloud 程式庫啟用 Google Drive API）`);
       }
     }
 
     async function saveToGoogleDrive() {
-      const metadata = { name: FILE_NAME, parents: driveFileId ? undefined : ['appDataFolder'] };
-      const form = new FormData();
-      form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
-      form.append('file', new Blob([JSON.stringify(appState, null, 2)], { type: 'application/json' }));
+      try {
+        const metadata = { name: FILE_NAME, parents: driveFileId ? undefined : ['appDataFolder'] };
+        const form = new FormData();
+        form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
+        form.append('file', new Blob([JSON.stringify(appState, null, 2)], { type: 'application/json' }));
 
-      const url = driveFileId
-        ? `https://www.googleapis.com/upload/drive/v3/files/${driveFileId}?uploadType=multipart`
-        : 'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart';
+        const url = driveFileId
+          ? `https://www.googleapis.com/upload/drive/v3/files/${driveFileId}?uploadType=multipart`
+          : 'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart';
 
-      const res = await fetch(url, {
-        method: driveFileId ? 'PATCH' : 'POST',
-        headers: { Authorization: `Bearer ${accessToken}` },
-        body: form
-      });
-      const result = await res.json();
-      if (result.id) driveFileId = result.id;
-      document.getElementById('syncStatus').textContent = `雲端已儲存 (${new Date().toLocaleTimeString()})`;
+        const res = await fetch(url, {
+          method: driveFileId ? 'PATCH' : 'POST',
+          headers: { Authorization: `Bearer ${accessToken}` },
+          body: form
+        });
+        const result = await res.json();
+        if (!res.ok) throw new Error(result.error?.message || `HTTP ${res.status}`);
+        if (result.id) driveFileId = result.id;
+        document.getElementById('syncStatus').textContent = `雲端已儲存 (${new Date().toLocaleTimeString()})`;
+      } catch (e) {
+        document.getElementById('syncStatus').textContent = `儲存失敗：${e.message}`;
+      }
     }
 
     render();
